@@ -1,3 +1,11 @@
+import 'dart:async';
+import 'dart:math';
+
+import 'package:egyptian_ratscrew/ai.dart';
+import 'package:egyptian_ratscrew/card/widget.dart';
+import 'package:egyptian_ratscrew/deck/model.dart';
+import 'package:egyptian_ratscrew/game.dart';
+import 'package:egyptian_ratscrew/player/widget.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -13,33 +21,15 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Flutter Demo',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
-        primarySwatch: Colors.blue,
+        primarySwatch: Colors.green,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: MyHomePage(title: 'Flutter Demor Home Page'),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
+  MyHomePage({Key? key, required this.title}) : super(key: key);
 
   final String title;
 
@@ -48,68 +38,186 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  int turn = Random().nextInt(4);
+  int currentBid = 0;
+  int bidder = -1;
+  var players = initPlayers();
+  var talon = DeckModel([]);
+  bool isSlapable = false;
+  List<Timer> slapTimers = [];
+  Timer? playTimer, collectTimer;
 
-  void _incrementCounter() {
+  void reset() {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      turn = Random().nextInt(4);
+      currentBid = 0;
+      bidder = -1;
+      players = initPlayers();
+      talon = DeckModel([]);
+      isSlapable = false;
+      slapTimers.forEach((element) {
+        element.cancel();
+      });
+      playTimer?.cancel();
+      collectTimer?.cancel();
     });
+  }
+
+  void resetSlapTimers() {
+    slapTimers.forEach((element) {
+      element.cancel();
+    });
+  }
+
+  void onTurnStart() {}
+
+  void winsTalon(int playerIndex) {
+    players[playerIndex].deck.cards.addAll(talon.cards);
+    talon.cards.clear();
+    players.asMap().forEach((index, player) {
+      if (player.isCardLess && index != playerIndex) {
+        player.isAlive = false;
+      }
+    });
+    setState(() {
+      turn = playerIndex;
+      currentBid = 0;
+    });
+    debugPrint("$playerIndex wins talon");
+    bool isOver = players[playerIndex].deck.cards.length == 52;
+    if (isOver) {
+      debugPrint("over");
+    }
+    if (!isOver) {
+      playTimer = Timer(const Duration(milliseconds: 1000), nextTurn);
+    }
+  }
+
+  int getNextPlayerIndex() {
+    for (var i = (turn + 1) % 4; i != turn; i = (i + 1) % 4) {
+      if (!players[i].isCardLess) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  void onUserSlap() {
+    debugPrint("a${slapTimers.toString()}");
+    playTimer?.cancel();
+    collectTimer?.cancel();
+
+    resetSlapTimers();
+    setState(() {
+      if (isSlapable) {
+        winsTalon(0);
+      } else {
+        var cards = players[0].discards(2);
+        talon.addAtStart(cards);
+      }
+    });
+  }
+
+  void onCPUSlap(int playerIndex) {
+    debugPrint("$playerIndex slaps at ${DateTime.now().toString()}");
+    resetSlapTimers();
+    collectTimer?.cancel();
+    playTimer?.cancel();
+
+    setState(() {
+      if (isSlapable) {
+        winsTalon(playerIndex);
+      } else {
+        var cards = players[playerIndex].discards(2);
+        talon.addAtStart(cards);
+      }
+    });
+  }
+
+  void start() {
+    if (turn == 0) return;
+    nextTurn();
+  }
+
+  void nextTurn([bool userTurn = false]) {
+    if (turn == -1) {
+      return;
+    }
+    var card = players[userTurn ? 0 : turn].plays();
+
+    bool setTimer = true;
+    setState(() {
+      talon.cards.add(card);
+      isSlapable = isTalonSlapable(talon);
+      debugPrint(isSlapable.toString());
+      if (slapTimers.every((element) => !element.isActive)) {
+        slapTimers = getSlapsTimeout(
+            isSlapable: isSlapable,
+            cpus: players.where((element) => element.isCPU).toList(),
+            callback: onCPUSlap);
+      }
+
+      if (card.isCourt) {
+        bidder = turn;
+        currentBid = card.bidValue;
+        turn = getNextPlayerIndex();
+      } else {
+        if (currentBid > 0) {
+          currentBid = max(currentBid - 1, 0);
+          if (currentBid == 0 || players[turn].deck.cards.isEmpty) {
+            collectTimer = Timer(
+                const Duration(milliseconds: 1000), () => winsTalon(bidder));
+            setTimer = false;
+          }
+        } else {
+          turn = getNextPlayerIndex();
+        }
+      }
+    });
+
+    if (setTimer) {
+      playTimer = Timer(const Duration(milliseconds: 1000), nextTurn);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
-            ),
+      body: Container(
+        alignment: Alignment.center,
+        child: ListView(
+          children: [
+            ListView.builder(
+                shrinkWrap: true,
+                itemCount: players.length,
+                itemBuilder: (BuildContext context, int index) {
+                  return PlayerWidget(
+                    player: players[index],
+                    isEldest: turn == index,
+                  );
+                }),
+            Text("Talon : ${talon.cards.length} cards"),
+            if (talon.cards.isNotEmpty) CardWidget(card: talon.cards.last),
+            Row(
+              children: [
+                OutlinedButton(
+                    onPressed: () {
+                      start();
+                    },
+                    child: const Text("Start")),
+                OutlinedButton(
+                    onPressed: () {
+                      if (turn == 0) nextTurn(true);
+                    },
+                    child: const Text("Jouer")),
+                OutlinedButton(
+                    onPressed: onUserSlap, child: const Text("slap")),
+                OutlinedButton(onPressed: reset, child: const Text("Reset")),
+              ],
+            )
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
